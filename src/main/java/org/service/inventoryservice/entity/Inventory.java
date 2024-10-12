@@ -18,9 +18,15 @@ public class Inventory {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "sku_code")
-    private String skuCode;
-
     @Column(name = "quantity")
     private Integer quantity;
+
+    @Column(name = "limit_qnty")
+    private Integer limit;
+
+    @Column(name = "limit_notification_sent")
+    private boolean isLimitNotificationSent;
+
+    @OneToOne(mappedBy = "inventory", cascade = CascadeType.ALL)
+    private Product product;
 }
