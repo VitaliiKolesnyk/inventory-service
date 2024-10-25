@@ -6,28 +6,28 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.ArrayList;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Entity
-@Table(name = "products")
-@Data
+@Table(name = "product_reservation")
 @AllArgsConstructor
 @NoArgsConstructor
+@Data
 @Builder
-public class Product {
+public class ProductReservation {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private String name;
+    private String orderNumber;
 
-    private String skuCode;
+    @ManyToOne
+    @JoinColumn(name = "product_id", nullable = false)
+    private Product product;
 
-    @OneToOne
-    private Inventory inventory;
+    private int quantity;
 
-    @OneToMany(mappedBy = "product")
-    private List<ProductReservation> productReservations = new ArrayList<>();
+    private LocalDateTime reservationUntilDate;
 }

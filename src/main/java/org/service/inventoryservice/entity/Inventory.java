@@ -24,8 +24,14 @@ public class Inventory {
     @Column(name = "limit_qnty")
     private Integer limit;
 
+    @Column(name = "reserved_qnty")
+    private Integer reservedQuantity;
+
     @Column(name = "limit_notification_sent")
     private boolean isLimitNotificationSent;
+
+    @Version
+    private Integer version;
 
     @OneToOne(mappedBy = "inventory", cascade = CascadeType.ALL)
     private Product product;

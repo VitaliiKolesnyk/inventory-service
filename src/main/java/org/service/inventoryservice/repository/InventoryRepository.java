@@ -1,6 +1,5 @@
 package org.service.inventoryservice.repository;
 
-import org.service.inventoryservice.dto.InStockRequest;
 import org.service.inventoryservice.entity.Inventory;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;

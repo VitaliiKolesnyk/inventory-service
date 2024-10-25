@@ -1,19 +1,23 @@
 package org.service.inventoryservice.service;
 
-import org.service.inventoryservice.dto.InStockRequest;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.service.inventoryservice.dto.InventoryRequest;
 import org.service.inventoryservice.dto.InventoryResponse;
+import org.service.inventoryservice.dto.ReserveRequest;
+import org.service.inventoryservice.event.PaymentEvent;
 import org.service.inventoryservice.event.ProductEvent;
 
 import java.util.List;
 
 public interface InventoryService {
 
-    boolean isInStock(InStockRequest inStockRequest);
+    boolean reserveInventory(ReserveRequest reserveRequest);
 
     InventoryResponse update(Long id, InventoryRequest inventoryRequest);
 
     List<InventoryResponse> findAll();
 
-    void listen(ProductEvent productEvent);
+    void listen(ConsumerRecord<String, String> record);
+
+    void cancelReservation();
 }

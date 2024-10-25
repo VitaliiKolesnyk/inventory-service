@@ -1,29 +1,44 @@
 package org.service.inventoryservice.service.impl;
 
-import org.service.inventoryservice.dto.InStockRequest;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.transaction.Transactional;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.service.inventoryservice.dto.InventoryRequest;
 import org.service.inventoryservice.dto.InventoryResponse;
 import org.service.inventoryservice.dto.ProductDto;
+import org.service.inventoryservice.dto.ReserveRequest;
 import org.service.inventoryservice.entity.Inventory;
 import org.service.inventoryservice.entity.Product;
+import org.service.inventoryservice.entity.ProductReservation;
 import org.service.inventoryservice.event.NotificationEvent;
+import org.service.inventoryservice.event.OrderCancelEvent;
+import org.service.inventoryservice.event.PaymentEvent;
 import org.service.inventoryservice.event.ProductEvent;
 import org.service.inventoryservice.mapper.InventoryMapper;
+import org.service.inventoryservice.mapper.ProductMapper;
 import org.service.inventoryservice.repository.InventoryRepository;
 import lombok.RequiredArgsConstructor;
 import org.service.inventoryservice.repository.ProductRepository;
+import org.service.inventoryservice.repository.ProductReservationRepository;
 import org.service.inventoryservice.service.InventoryService;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.apache.kafka.common.requests.DeleteAclsResponse.log;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class InventoryServiceImpl implements InventoryService {
 
     private final InventoryRepository inventoryRepository;
@@ -32,21 +47,96 @@ public class InventoryServiceImpl implements InventoryService {
 
     private final ProductRepository productRepository;
 
-    private final KafkaTemplate<String, NotificationEvent> kafkaTemplate;
+    private final ProductReservationRepository productReservationRepository;
 
-    @Override
-    public boolean isInStock(InStockRequest inStockRequest) {
-        List<ProductDto> products = inStockRequest.products();
+    private final ProductMapper productMapper;
 
-       for (ProductDto product : products) {
-           Integer count = inventoryRepository.countProductsInStock(product.skuCode());
+    private final KafkaTemplate<String, Object> kafkaTemplate;
 
-           if (count < product.quantity()) {
-               return false;
-           }
-       }
+    @Transactional // Ensures atomicity of the entire method
+    public boolean reserveInventory(ReserveRequest reserveRequest) {
+        for (ProductDto productDto : reserveRequest.products()) {
+            // Fetch the product and inventory in the same transaction
+            Product product = productRepository.findBySkuCode(productDto.skuCode())
+                    .orElseThrow(() -> new RuntimeException("Product not found"));
 
-       return true;
+            Inventory inventory = inventoryRepository.findByProductSkuCode(productDto.skuCode()).orElseThrow(
+                    () -> new RuntimeException("Inventory not found"));
+
+            // Check and subtract inventory in one go to prevent race conditions
+            if (inventory.getQuantity() < productDto.quantity()) {
+                log.warn("Not enough stock for SKU: {}", productDto.skuCode());
+                return false;
+            }
+
+            // Subtract the quantity
+            inventory.setQuantity(inventory.getQuantity() - productDto.quantity());
+
+            // Save the updated inventory
+            inventoryRepository.save(inventory);
+
+            // Reserve the product after updating the inventory
+            ProductReservation productReservation = productMapper.map(productDto, reserveRequest.orderNumber());
+            productReservation.setProduct(product);
+            product.getProductReservations().add(productReservation);
+            productReservation.setReservationUntilDate(LocalDateTime.now().plusMinutes(10));
+
+            // Save the reservation
+            productReservationRepository.save(productReservation);
+        }
+
+        return true;
+    }
+
+    private void addQuantityToInventory(String skuCode, Integer quantity) {
+        final int MAX_RETRIES = 3; // Maximum retries for optimistic locking failure
+        int attempt = 0;
+
+        while (attempt < MAX_RETRIES) {
+            try {
+                // Fetch inventory by SKU code
+                Inventory inventory = inventoryRepository.findByProductSkuCode(skuCode).orElseThrow(
+                        () -> new RuntimeException("Inventory not found"));
+
+                // Update the quantity
+                inventory.setQuantity(inventory.getQuantity() + quantity);
+
+                // Save the inventory, version will be checked for optimistic locking
+                inventoryRepository.save(inventory);
+
+                // Exit the loop if save is successful
+                break;
+
+            } catch (OptimisticLockingFailureException e) {
+                // Handle optimistic locking failure
+                attempt++;
+                if (attempt >= MAX_RETRIES) {
+                    throw new RuntimeException("Failed to update inventory due to concurrent modifications for SKU: " + skuCode, e);
+                }
+                // Optional: Add a small delay before retrying
+                try {
+                    Thread.sleep(100); // 100ms delay before retrying
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt(); // Handle thread interruption
+                }
+            }
+        }
+    }
+
+    @Scheduled(fixedRate = 60000)
+    public void cancelReservation() {
+        List<ProductReservation> productReservations =
+                productReservationRepository.findAllByReservationUntilDateLessThan(LocalDateTime.now());
+
+        for (ProductReservation productReservation : productReservations) {
+            productReservationRepository.delete(productReservation);
+
+            addQuantityToInventory(productReservation.getProduct().getSkuCode(), productReservation.getQuantity());
+
+            String orderNumber = productReservation.getOrderNumber();
+
+            kafkaTemplate.send("order-cancel-events", new OrderCancelEvent(orderNumber));
+        }
     }
 
     @Override
@@ -66,21 +156,6 @@ public class InventoryServiceImpl implements InventoryService {
     @Override
     public List<InventoryResponse> findAll() {
         return inventoryMapper.map(inventoryRepository.findAll());
-    }
-
-    @Override
-    @KafkaListener(topics = "product-events")
-    public void listen(ProductEvent productEvent) {
-        log.info("Got Message from product-events topic {}", productEvent);
-
-        String action = productEvent.action();
-
-        switch (action) {
-            case "CREATE": saveInventory(productEvent);
-                break;
-            case "DELETE": deleteInventory(productEvent);
-                break;
-        }
     }
 
     private void saveInventory(ProductEvent productEvent) {
@@ -115,7 +190,7 @@ public class InventoryServiceImpl implements InventoryService {
                 event.setMessage(String.format("""
                         Dear admin,
                         
-                        Please be informed that product %s quantiti is less than limit %d
+                        Please be informed that product %s quantity is less than limit %d
                         
                         """, inventory.getProduct().getSkuCode(), inventory.getLimit()));
 
@@ -130,5 +205,52 @@ public class InventoryServiceImpl implements InventoryService {
         inventory.setLimitNotificationSent(true);
 
         inventoryRepository.save(inventory);
+    }
+
+    @KafkaListener(topics = {"product-events", "payment-events"}, groupId = "inventory-service-group")
+    public void listen(ConsumerRecord<String, String> record) {
+        String topic = record.topic();
+        String message = record.value();
+
+        switch (topic) {
+            case "product-events":
+                ProductEvent productEvent = deserialize(message, ProductEvent.class);
+                handleProductEvent(productEvent);
+                break;
+            case "payment-events":
+                PaymentEvent paymentEvent = deserialize(message, PaymentEvent.class);
+                handlePaymentEvent(paymentEvent);
+                break;
+            default:
+                throw new IllegalArgumentException("Unknown topic: " + topic);
+        }
+    }
+
+    private <T> T deserialize(String json, Class<T> targetType) {
+        ObjectMapper objectMapper = new ObjectMapper();
+        try {
+            return objectMapper.readValue(json, targetType);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to deserialize JSON message", e);
+        }
+    }
+
+    private void handleProductEvent(ProductEvent productEvent) {
+        log.info("Got Message from product-events topic {}", productEvent);
+
+        String action = productEvent.action();
+
+        switch (action) {
+            case "CREATE": saveInventory(productEvent);
+                break;
+            case "DELETE": deleteInventory(productEvent);
+                break;
+        }
+    }
+
+    private void handlePaymentEvent(PaymentEvent paymentEvent) {
+        log.info("Got Message from payment-events topic {}", paymentEvent);
+
+        productReservationRepository.deleteByOrderNumber(paymentEvent.orderNumber());
     }
 }
