@@ -21,7 +21,8 @@ public class ImventoryMapperImpl implements InventoryMapper {
 
     @Override
     public InventoryResponse map(Inventory inventory) {
-        return new InventoryResponse(inventory.getId(), inventory.getProduct().getSkuCode(), inventory.getQuantity(), inventory.getLimit());
+        return new InventoryResponse(inventory.getId(), inventory.getProduct().getSkuCode(), inventory.getProduct().getName(),
+                inventory.getProduct().getThumbnailUrl(), inventory.getQuantity(), inventory.getLimit());
     }
 
     @Override

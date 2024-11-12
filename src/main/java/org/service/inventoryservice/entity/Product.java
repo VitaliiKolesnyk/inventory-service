@@ -25,6 +25,8 @@ public class Product {
 
     private String skuCode;
 
+    private String thumbnailUrl;
+
     @OneToOne
     private Inventory inventory;
 

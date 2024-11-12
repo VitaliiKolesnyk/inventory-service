@@ -12,10 +12,11 @@ import org.service.inventoryservice.dto.ReserveRequest;
 import org.service.inventoryservice.entity.Inventory;
 import org.service.inventoryservice.entity.Product;
 import org.service.inventoryservice.entity.ProductReservation;
-import org.service.inventoryservice.event.NotificationEvent;
+import org.service.inventoryservice.event.LimitExceedEvent;
 import org.service.inventoryservice.event.OrderCancelEvent;
 import org.service.inventoryservice.event.PaymentEvent;
 import org.service.inventoryservice.event.ProductEvent;
+import org.service.inventoryservice.exception.NotInStockException;
 import org.service.inventoryservice.mapper.InventoryMapper;
 import org.service.inventoryservice.mapper.ProductMapper;
 import org.service.inventoryservice.repository.InventoryRepository;
@@ -30,11 +31,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
-
-import static org.apache.kafka.common.requests.DeleteAclsResponse.log;
 
 @Service
 @RequiredArgsConstructor
@@ -58,10 +55,10 @@ public class InventoryServiceImpl implements InventoryService {
         for (ProductDto productDto : reserveRequest.products()) {
             // Fetch the product and inventory in the same transaction
             Product product = productRepository.findBySkuCode(productDto.skuCode())
-                    .orElseThrow(() -> new RuntimeException("Product not found"));
+                    .orElseThrow(() -> new NotInStockException("Product not found"));
 
             Inventory inventory = inventoryRepository.findByProductSkuCode(productDto.skuCode()).orElseThrow(
-                    () -> new RuntimeException("Inventory not found"));
+                    () -> new NotInStockException("Inventory not found"));
 
             // Check and subtract inventory in one go to prevent race conditions
             if (inventory.getQuantity() < productDto.quantity()) {
@@ -162,6 +159,7 @@ public class InventoryServiceImpl implements InventoryService {
         Product product = new Product();
         product.setName(productEvent.name());
         product.setSkuCode(productEvent.skuCode());
+        product.setThumbnailUrl(productEvent.thumbnailUrl());
 
         Inventory inventory = new Inventory();
         inventory.setProduct(product);
@@ -179,22 +177,27 @@ public class InventoryServiceImpl implements InventoryService {
         inventoryRepository.delete(inventory);
     }
 
+    private void updateInventory(ProductEvent productEvent) {
+        Product product = productRepository.findBySkuCode(productEvent.skuCode())
+                .orElseThrow(() -> new RuntimeException("Product not found"));
+
+        product.setName(productEvent.name());
+        product.setThumbnailUrl(productEvent.thumbnailUrl());
+
+        productRepository.save(product);
+    }
+
     @Scheduled(fixedRate = 60000) // 10 minutes in milliseconds
     public void checkInventoryAndNotify() {
         List<Inventory> inventories = inventoryRepository.findAll();
 
         for (Inventory inventory : inventories) {
             if (inventory.getQuantity() <= inventory.getLimit() && !inventory.isLimitNotificationSent()) {
-                NotificationEvent event = new NotificationEvent();
-                event.setSubject("Product limit notification");
-                event.setMessage(String.format("""
-                        Dear admin,
-                        
-                        Please be informed that product %s quantity is less than limit %d
-                        
-                        """, inventory.getProduct().getSkuCode(), inventory.getLimit()));
+                LimitExceedEvent limitExceedEvent = new LimitExceedEvent();
+                limitExceedEvent.setSkuCode(inventory.getProduct().getSkuCode());
+                limitExceedEvent.setLimit(inventory.getQuantity());
 
-                kafkaTemplate.send("inventory-limit-topic", event);
+                kafkaTemplate.send("inventory-limit-topic", limitExceedEvent);
 
                 updateIsNotificationSentFlag(inventory);
             }
@@ -245,12 +248,16 @@ public class InventoryServiceImpl implements InventoryService {
                 break;
             case "DELETE": deleteInventory(productEvent);
                 break;
+            case "UPDATE": updateInventory(productEvent);
+                break;
         }
     }
 
     private void handlePaymentEvent(PaymentEvent paymentEvent) {
         log.info("Got Message from payment-events topic {}", paymentEvent);
 
-        productReservationRepository.deleteByOrderNumber(paymentEvent.orderNumber());
+        if (paymentEvent.status().equals("Success")) {
+            productReservationRepository.deleteByOrderNumber(paymentEvent.orderNumber());
+        }
     }
 }
