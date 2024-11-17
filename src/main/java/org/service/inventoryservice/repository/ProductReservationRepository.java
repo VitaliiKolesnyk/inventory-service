@@ -12,7 +12,7 @@ import java.util.List;
 public interface ProductReservationRepository extends JpaRepository<ProductReservation, Long> {
 
     @Modifying
-    void deleteByOrderNumber(String orderNumber);
+    void deleteAllByOrderNumber(String orderNumber);
 
     List<ProductReservation> findAllByReservationUntilDateLessThan(LocalDateTime localDateTime);
 }

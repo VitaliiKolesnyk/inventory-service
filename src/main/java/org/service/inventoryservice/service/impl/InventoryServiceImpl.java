@@ -257,7 +257,7 @@ public class InventoryServiceImpl implements InventoryService {
         log.info("Got Message from payment-events topic {}", paymentEvent);
 
         if (paymentEvent.status().equals("Success")) {
-            productReservationRepository.deleteByOrderNumber(paymentEvent.orderNumber());
+            productReservationRepository.deleteAllByOrderNumber(paymentEvent.orderNumber());
         }
     }
 }
