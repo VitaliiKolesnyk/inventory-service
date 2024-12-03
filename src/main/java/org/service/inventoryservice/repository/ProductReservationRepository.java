@@ -1,5 +1,6 @@
 package org.service.inventoryservice.repository;
 
+import jakarta.transaction.Transactional;
 import org.service.inventoryservice.entity.ProductReservation;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -12,6 +13,7 @@ import java.util.List;
 public interface ProductReservationRepository extends JpaRepository<ProductReservation, Long> {
 
     @Modifying
+    @Transactional
     void deleteAllByOrderNumber(String orderNumber);
 
     List<ProductReservation> findAllByReservationUntilDateLessThan(LocalDateTime localDateTime);

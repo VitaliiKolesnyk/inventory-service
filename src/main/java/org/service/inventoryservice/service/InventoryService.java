@@ -17,6 +17,8 @@ public interface InventoryService {
 
     List<InventoryResponse> findAll();
 
+    InventoryResponse findBySkuCode(String skuCode);
+
     void listen(ConsumerRecord<String, String> record);
 
     void cancelReservation();
